@@ -6,6 +6,7 @@
 #include <vector>
 #define CK(x) do {auto e=(x); if(e!=cudaSuccess){fprintf(stderr,"%s:%d %s\n",__FILE__,__LINE__,cudaGetErrorString(e));exit(1);}}while(0)
 __device__ unsigned long long timer(){unsigned long long t;asm volatile("mov.u64 %0, %%globaltimer;":"=l"(t));return t;}
+__global__ void gate(){auto t=timer();while(timer()-t<1000000ULL){}}
 __global__ void norm(const float*x,float*y,int K,unsigned long long*t,int early){
  __shared__ float s[256]; int r=blockIdx.x,i=threadIdx.x;
  if(i==0)t[2*r]=timer();
@@ -49,7 +50,7 @@ int main(int argc,char**argv){
  CK(cudaMalloc(&dx,x.size()*4));CK(cudaMalloc(&dy,x.size()*4));CK(cudaMalloc(&dw,w.size()*4));CK(cudaMalloc(&dz,out.size()*4));CK(cudaMalloc(&nt,2*M*8));CK(cudaMalloc(&mt,3*blocks*8));CK(cudaMemcpy(dx,x.data(),x.size()*4,cudaMemcpyHostToDevice));CK(cudaMemcpy(dw,w.data(),w.size()*4,cudaMemcpyHostToDevice));cudaStream_t stream;CK(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));cudaEvent_t start,end;CK(cudaEventCreate(&start));CK(cudaEventCreate(&end));std::vector<unsigned long long>hn(2*M),hm(3*blocks);
  puts("kind,M,K,N,pdl,prefetch_rows,early,rep,e2e_us,norm_span_us,overlap_window_us,max_abs_error");
  for(int early:{0,1})for(int pre:{0,std::min(K,16),K})for(int rep=-5;rep<R;rep++)for(int order=0;order<2;order++){
- int pdl=(order+(rep&1))&1;CK(cudaEventRecord(start,stream));norm<<<M,256,0,stream>>>(dx,dy,K,nt,early);CK(cudaGetLastError());launch(mm,dim3((M+15)/16,(N+15)/16),stream,pdl,dy,dw,dz,M,K,N,pre,mt);CK(cudaEventRecord(end,stream));CK(cudaEventSynchronize(end));
+ int pdl=(order+(rep&1))&1;gate<<<1,1,0,stream>>>();CK(cudaGetLastError());CK(cudaEventRecord(start,stream));norm<<<M,256,0,stream>>>(dx,dy,K,nt,early);CK(cudaGetLastError());launch(mm,dim3((M+15)/16,(N+15)/16),stream,pdl,dy,dw,dz,M,K,N,pre,mt);CK(cudaEventRecord(end,stream));CK(cudaEventSynchronize(end));
  CK(cudaMemcpy(out.data(),dz,out.size()*4,cudaMemcpyDeviceToHost));float err=0;for(size_t i=0;i<out.size();i++){if(!std::isfinite(out[i])||fabs(out[i]-ref[i])>1e-3+1e-3*fabs(ref[i])){fprintf(stderr,"FAIL %zu %.9g %.9g\n",i,out[i],ref[i]);return 3;}err=std::max(err,fabsf(out[i]-ref[i]));}
  if(rep<0)continue;CK(cudaMemcpy(hn.data(),nt,hn.size()*8,cudaMemcpyDeviceToHost));CK(cudaMemcpy(hm.data(),mt,hm.size()*8,cudaMemcpyDeviceToHost));auto ns=hn[0],ne=hn[1],ms=hm[0];for(int i=0;i<M;i++){ns=std::min(ns,hn[2*i]);ne=std::max(ne,hn[2*i+1]);}for(int i=0;i<blocks;i++)ms=std::min(ms,hm[3*i]);float elapsed;CK(cudaEventElapsedTime(&elapsed,start,end));printf("pair,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.9g\n",M,K,N,pdl,pre,early,rep,elapsed*1000,(ne-ns)/1000.,ms<ne?(ne-ms)/1000.:0.,err);
  }
